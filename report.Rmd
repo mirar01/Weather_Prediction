@@ -1,0 +1,512 @@
+---
+title: "StatComp Project 2: Scottish weather"
+author: "Mira Rabbat (s1915415, mirar01)"
+output:
+  html_document:
+    number_sections: no
+  pdf_document:
+    number_sections: no
+header-includes:
+  - \newcommand{\bm}[1]{\boldsymbol{#1}}
+  - \newcommand{\mat}[1]{\begin{bmatrix}#1\end{bmatrix}}
+---
+
+```{r setup, include = FALSE}
+# Modify this setup code chunk to set options
+# or add extra packages etc if needed.
+# See the project instructions for more details
+# on what code to show, and where/how.
+
+# Set default code chunk options
+knitr::opts_chunk$set(
+  echo = TRUE,
+  eval = TRUE
+)
+
+suppressPackageStartupMessages(library(tidyverse))
+suppressPackageStartupMessages(library(ggplot2))
+theme_set(theme_bw())
+suppressPackageStartupMessages(library(StatCompLab))
+suppressPackageStartupMessages(library(kableExtra))
+suppressPackageStartupMessages(library(gridExtra))
+suppressPackageStartupMessages(library(grid))
+suppressPackageStartupMessages(library(dplyr))
+
+
+# To give the same random number sequence every time the document is knit:ed,
+# making it easier to discuss the specific numbers in the text:
+set.seed(12345L)
+```
+
+```{r code=readLines("functions.R"), eval=TRUE, echo=FALSE}
+# Do not change this code chunk
+# Load function definitions
+source("functions.R")
+```
+
+
+# Seasonal Variability
+
+## Is precipitation seasonally varying?
+
+Seasonal effects on temperature are clear: temperatures tend to be lower in winter than in summer. However, the seasonal variability of precipitation is not as clear. To analyze this variability, we use historical weather data from The Global Historical Climatology Network on eight weather stations in Scotland, covering the time period from 1 January 1960 to 31 December 2018.
+
+We begin by loading data on the stations and the values observed at each station separately, then joining them using the `left_join` function. Furthermore, the names of two stations: "EDINBURGH: ROYAL BOTANIC GARDEN" and "BENMORE: YOUNGER BOTANIC GARDEN" to "EDINBURGH," and "BENMORE" respectively to allow for better presentation of the data.
+
+```{r data_prep, echo = TRUE}
+
+data(ghcnd_stations, package = "StatCompLab")
+data(ghcnd_values, package = "StatCompLab")
+
+ghcnd_stations$Name[7] <- "EDINBURGH"
+ghcnd_stations$Name[8] <- "BENMORE"
+
+ghcnd <- left_join(ghcnd_values, ghcnd_stations, by = "ID")
+
+```
+
+Next, we filter the data then graph it to gain an idea regarding the seasonal variability of precipitation in one year. Here, we observe the variations in precipitation levels in the year 2016:
+
+```{r plotting_a, echo=FALSE}
+ghcnd %>%
+  filter(Element %in% c("PRCP")) %>%
+  filter(Year %in% c("2016")) %>%
+  group_by(ID, Name, Element, DecYear, Elevation) %>%
+  summarise(Value = mean(Value), .groups = "drop") %>%
+  ggplot(aes(DecYear, Value, colour = Elevation)) +
+  geom_point(size=0.25) +
+  facet_wrap(~ Name)+
+  labs(y="Precipitation (in mm)", title = "Year = 2016")+
+  scale_x_continuous(name = "Day of the Year",
+                     breaks = seq_len(365))
+```
+
+The graphs above seem to suggest that we observe higher levels of precipitation in winter months (Jan, Feb, Mar, Oct, Nov, Dec) than in summer months (Apr, May, Jun, Jul, Aug, Sep) in most locations. Thus, for easier code structure, we add season information to our code.
+
+```{r code_structure, echo = TRUE}
+Winter_values <- ghcnd %>%
+  mutate(Season = ifelse(Month==1|Month==2|Month==3|Month==10|Month==11|Month==12, "Winter", "Summer")) %>%
+  filter(Element %in% c("PRCP")) %>%
+  filter(Season %in% c("Winter")) %>%
+  select(Name, Season, Year, Value)
+
+Summer_values <- ghcnd %>%
+  mutate(Season = ifelse(Month==1|Month==2|Month==3|Month==10|Month==11|Month==12, "Winter", "Summer")) %>%
+  filter(Season %in% c("Summer")) %>%
+  filter(Element %in% c("PRCP"))%>%
+  select(Name, Season, Year, Value)
+```
+
+Now, we can calculate the numerical difference in average precipitation between summer and winter seasons in 2016:
+
+```{r prcp_table, echo =FALSE}
+
+wint_2016_avg <-c(0)
+summ_2016_avg <- c(0)
+Names <- unique(ghcnd$Name)
+
+for (i in seq_along(Names)){
+wint_2016_avg[i] <- Winter_values %>%
+  filter(Year %in% c("2016")) %>%
+  filter(Name %in% c(Names[i]))%>%
+  summarise(mean(Value))
+
+summ_2016_avg[i] <- Summer_values %>%
+  filter(Year %in% c("2016")) %>%
+  filter(Name %in% c(Names[i]))%>%
+  summarise(mean(Value))
+}
+knitr::kable(data.frame("Location"=Names,
+                        "Winter_Average" = unlist(wint_2016_avg),
+                        "Summer_Average"= unlist(summ_2016_avg),
+                        "Difference"= abs(unlist(wint_2016_avg) -unlist(summ_2016_avg))),
+                        col.names=c("Location", "Winter Average",
+                                    "Summer Average",
+                                    "Absolute Difference")) %>% 
+                        add_header_above(c("2016 Precipitation Averages (mm)" = 4))%>%
+  kable_styling()
+```
+
+These values reiterate the observation made in the previous graphs of precipitation in 2016 that precipitation in winter months is greater than in summer months. However, visual analysis and data from one year are not enough to generalize this statement for all years. However, they do provide motivation to test for the following hypotheses:
+
+```{=tex}
+\begin{aligned}
+H_0&: \textrm{The rainfall distribution is the same in winter as in summer}\\
+H_1&: \textrm{The winter and summer distributions have different expected values}
+\end{aligned}
+```
+To test the hypotheses, we obtain 8 different Test Statistics, $T$, for each station using $T = |\textrm{Winter Average}-\textrm{Summer Average}|$. Then, we run a Monte Carlo Permutation Test to obtain 8 different $p$-values. The code for the test can be found in the `analysis.R` file. The way the test works is that it combines the precipitation observations during both Summer and Winter for each station. Next, different means under possible rearrangements of the combined data are calculated using the `sample()` function. This process is repeated `nPermutation = 10,000` times. The absolute difference between each pair of resultant means are calculated for each permutation to give permutation test statistics.Next, the $p$-values were calculated by summing all of the permutation test statistics that were greater than the observed test statistic. The results were as follows:
+
+```{r mcp_test, echo=FALSE}
+mcp_tests <- readRDS(file = "data/mcp_tests.rds")
+
+mcp_df <- data.frame("Station"=mcp_tests$Station, "Test Statistic dist"=mcp_tests$Test_Statistic_a, "p value dist"=mcp_tests$p_value_a, "Standard Deviation dist"=mcp_tests$Standard_Deviation_a,"Test Statistic prob"=mcp_tests$Test_Statistic_b, "p value prob"=mcp_tests$p_value_b, "Standard Deviation prob"=mcp_tests$Standard_Deviation_b)
+
+mcp_df %>%
+  select("Station", "Test.Statistic.dist", "p.value.dist", "Standard.Deviation.dist")%>%
+  knitr::kable(col.names = gsub("[.]", " ", names(mcp_df)[1:4])) %>%
+  add_header_above(c("Monte Carlo Permutation Test - Rainfall Distribution" = 4)) %>%
+  kable_styling()
+  
+
+```
+
+As can be seen in the table above, the $p$-values suggest that in 6 out of the 8 stations analysed, randomly sampling the data does not emulate the recorded difference in precipitation values, providing some evidence that precipitation seasonality does exist at these stations. However, in `LEUCHARS` and `EDINBURGH`, randomly sampling the data does result in differences similar to those observed. This is best visualized through the histograms below, where the dashed blue line denotes the observed test statistic:
+
+```{r histograms, echo=FALSE, message = FALSE}
+#knitr::kable(mcp_df, col.names = gsub("[.]", " ", names(mcp_df))) %>% 
+ # add_header_above(c(" "=1, "Rainfall Distribution"=3,"Rainfall Probability"=3))%>%
+  #kable_styling()
+
+grid.arrange(grobs = mcp_tests[[12]], ncol = 3, top = "Monte Carlo Permutation Test Visualization")
+
+```
+
+As can be seen, the $p$-values obtain in the Monte Carlo Permutation test seem to suggest we can reject the null in 6 out of 8 stations; random sampling does not recreate values equal to or greater than the observed seasonal difference in precipitation. However, these $p$-values are only estimates $\hat{p}$ of the real $p$-value. Hence, before deciding whether or not to reject the null, we need to find the standard deviation and thus construct confidence intervals for each $p$.
+
+If we let $X \sim \textrm{Bin}(N,p)$, where $p$ is the true $p$-value and $N$ is the number of permutations, be the random variable for every time a permutation results in a test statistic at least as extreme as the observed test statistic. Since we estimate $p$ with $\hat{p}=\frac{x}{N}$, then we get that Var$(\hat{p})=\frac{p(1-p)}{N}$. A more useful representation of the variance in $\hat{p}$ is the variance of its relative error (its relative error is its standard deviation divided by its value). The variance in relative error is Var$(RSE)=$Var$\left[\frac{\hat{p}-p}{p}\right]=\frac{1-p}{Np}$. Thus, we can see that if $p \to 0$, as many of the above $p$-values do, the relative error approaches infinity. This issue arises due to the nature of Monte Carlo Permutation test; while we are taking a larger number of permutation, this is still only a sample of the number of permutations possible. Thus, even if we get no permuted test statistics that are greater than the observed test statistic does not imply there are no permutations that can produce such an outcome. Interestingly, some studies even suggest calculating \(\hat{p}\) using \(\frac{x+1}{N+1}\) rather than \(\frac{x}{N}\) (Phipson and Smyth, 2010). Thus, we cannot construct a confidence interval using usual methods when $p=0$.
+
+Instead, we look at the definition of a confidence interval to find that the null hypothesis is only rejected at the 5% confidence level when $P_X(X=0|p_0)<0.25$. Solving for $p_0$, we find that the upper bound of our confidence interval is $p_0 \leq 1-0.025^{\frac{1}{N}}$. Thus, our confidence interval is:
+
+$$
+CI_p = (0,1-0.025^{\frac{1}{N}})
+$$
+
+We can limit the width of the confidence interval by setting its upper bound to be less than some epsilon $\epsilon$, $1-0.025^{\frac{1}{N}}<\epsilon$. Setting $\epsilon = 0.02$, we get \(N\geq 183\). 
+
+Now that we have the proper intervals, it is clear that although \(\hat{p}\) is only an estimate or \(p\), the range of values within the confidence interval of \(p\) are still low enough to reject the null hypothesis at the 5% significance level for six of the eight stations: `BRAEMAR`, `BALMORAL`, `ARDTALNAIG`, `FASKALLY`, `PENICUIK`, and `BENMORE`. All 6 of these stations had an estimated \(p\)-value of 0, and an upper bound of 0.02 for the true \(p\)-value. Thus we can conclude that seasonality in precipitation does ecist for these 6 stations.
+
+As for `EDINBRUGH` and `LEUCHARS`, the \(\hat{p}\)-values esti,ated are greater than 0, so we no longer face the previous problem of the variance of the random error Var$(RSE)=$Var$\left[\frac{\hat{p}-p}{p}\right]=\frac{1-p}{Np}$ approaching infinity. In this case, we can calculate the 95% confidence interval for the real \(p\) values using normal approximation: 
+\[
+CI_p = \hat{p} \pm z_{0.975}\sqrt{\frac{\hat{p}(1-\hat{p})}{N}}
+\]
+
+The width of the interval is maximized when \(p=\frac{1}{2}\). Thus, we can set an upper bound for the interval width by approximating \(z_{0.975} \approx 2\) and setting the interval width \(4 \sqrt{\frac{1}{4N}} \leq \epsilon =0.02\). This gives us a much higher minimum value of \(N\), \(N\geq10000\) than was required above. This is the value passed into the function defined in `analysis.R`. Thus, the interval width for both \(p\)-values is at most 0.02.
+
+\[
+CI_{p_{EDINBURGH}}= (0.6518,0.6708)\\
+CI_{p_{LEUCHARS}}= (0.0279,0.0349)
+\]
+
+Thus, in both cases, there is not enough evidence to reject the null hypothesis for the `EDINBURGH` station at the 1%, 5%, and 10% significance levels. This implies that there is no evidence for seasonality in rainfall distribution at that station. As for `LEUCHARS`, we can reject the null at the 5% significant level. As for other 6 station where we rejected the null, this implies there is evidence against the null hypothesis that there is no seasonality between summer and winter .
+
+## How often does it rain?
+
+A similar question that comes up when discussing the seasonality of precipitation revolves around the difference in probability rather than distribution of rainfall between winter and summer. To that end, we test the following hypotheses:
+
+\begin{aligned}
+H_0&: \textrm{The daily probability of rainfall is the same in winter as in summer}\\
+H_1&: \textrm{The daily probability of rainfall is different in winter and in summer}
+\end{aligned}
+
+The observed test statistic in this case would be \(T = |\textrm{winter empirical nonzero proportion} - \textrm{summer empirical nonzero proportion}|\). We adapt the function previously used to run a Monte Carlo permutation test on the rainfall distributions to run the same test but on daily probability of rainfall as well, with days having rainfall amount greater than 0 taking on a value of 1, and days where there was no rainfall observed remaining as 0. The results of this test were as follows:
+
+```{r mc_test_plot_2, echo=FALSE}
+mcp_df %>%
+  select("Station", "Test.Statistic.prob", "p.value.prob", "Standard.Deviation.prob")%>%
+  knitr::kable(col.names = gsub("[.]", " ", names(mcp_df)[c(1,5:7)])) %>%
+  add_header_above(c("Monte Carlo Permutation Test - Rainfall Probability" = 4)) %>%
+  kable_styling()
+
+```
+The observed test statistics at each of the stations imply the existence of seasonality in rainfall distribution between summer and winter months. The estimated \(p\)-values,\(\hat{p}\) for each of these test statistics was 0. As before, since we have 10,000 permutations, then an upper bound for the interval width of the confidence interval of the true value of \(p\) would be \(\epsilon=0.02\). In other words, \(0.02\) is the upper bound for the true value of the \(p\)-values. Hence, we have enough evidence to reject the null hypothesis for each of the stations, and the data favors the alternate hypothesis.
+
+In short, the data supports the alternate hypothesis of seasonality in rainfall distribution for 7 out of the 8 stations analyzed. This implies a cyclical trend in the data, similar to the sinusoidal shape of the sine and cosine functions. As for rainfall probability, the null is rejected at each of the 8 stations in favor. Thus, for the `EDINBURGH` station where we failed to reject the null that the distribution of rainfall is different in summer and winter, the nonetheless data favors the hypothesis that the probability of rainfall in `EDINBURGH` is higher in winter than it is in summer. Thus, we can conclude that seasonality is seen and contributes to a cyclical nature in the Scottish precipitation values analyzed.
+
+# Spatial Weather Prediction
+
+We begin by creating a new date frame, `monthly_data` that returns the square root of the monthly averaged precipitation value. This summarization enables us to define and estimate the a monthly precipitation model for Scotland. The square root is taken to improve upon the side effects of the non-Gaussianity of the data.
+```{r monthly_prep, echo = TRUE}
+
+monthly_data <- ghcnd %>%
+                    pivot_wider(names_from = Element, values_from = Value) %>%
+                    filter(!is.na(PRCP) & !is.na(TMIN) & !is.na(TMAX)) %>%
+                    group_by(ID, Name, Month,Year, Latitude, Longitude, Elevation, .add= 
+                    TRUE) %>%
+                    summarise(PRCP = sqrt(mean(PRCP)), TMIN = mean(TMIN), TMAX= mean(TMAX),
+                    DecYear= mean(DecYear), .groups = "drop")
+                    
+
+```
+## Estimation and Prediction
+
+Now that the data is structured well, we begin by constructing a model that predicts precipitation levels in Scotland. In the model, we can include variables from our data we know may affect precipitation levels including: `Month`,`Longitude`,`Latitude`,`Elevation`, and `PRCP_Trend`. 
+
+For `Month`, we know from previous work that it exhibits seasonality and has a sinusoidal shape. Thus, we include \(\beta_1\sin(2\pi/12*Month) + \beta_2\cos(2\pi/12*Month) \) to account for the seasonality in precipitation values.  We include \(2\pi/12\) to make sure that functions only run for one period, which most resembles the seasonality found in part 1. The reason to include both sine and cosine is to avoid having to calculate what the phase shift would be: \(\cos(2\pi/12 *Month+\theta)= \sin\theta\cos(2\pi/12 *Month)+\cos\theta\sin(2\pi/12 *Month))\).
+
+As for the other variables, we do not know if they are linear with respect to precipitation. One way to check would be to plot a figure that shows the variation of average precipitation with changes in these variables:
+
+```{r trend_check_1, echo = FALSE}
+
+ghcnd %>%
+  filter(Element %in% c("PRCP")) %>%
+  group_by(ID, Name, Month, Latitude, Longitude, Elevation, .add= TRUE) %>%
+  summarise(Value = mean(Value), .groups = "drop")%>%
+  ggplot(aes(Elevation, Value, col=factor(Month) ))+
+  geom_point()+
+  labs(title= "Precipitation vs. Elevation", y="Mean Precipitation (in mm)")
+
+```
+
+
+From the graph above, we can see that mean values of precipitation clearly seem to fall with increased elevation, providing reason to add it to the model. However, they seem to do so in a sinusoidal manner. 
+
+While we add Elevation to the model based on the graph above, it should be noted that this graph is not enough evidence to include Elevation in the model. It would be better to test for the effect Elevation has on Precipitation values, as well as see if the variation follows more of polynomial or sinusoidal model.
+
+```{r trend_check_2, echo = FALSE}
+
+ghcnd %>%
+  filter(Element %in% c("PRCP")) %>%
+  group_by(ID, Name, Month, Latitude, Longitude, Elevation, .add= TRUE) %>%
+  summarise(Value = mean(Value), .groups = "drop")%>%
+  ggplot(aes(Longitude, Value, col=factor(Month) ))+
+  geom_point()+
+  labs(title= "Longitude vs. Elevation", y="Mean Precipitation (in mm)")
+
+```
+
+
+As for `Longitude`, we can see that mean precipitation seems to fall with increased values for `Longitude`. This provides evidence of a linear trend, and so we add it to the model. 
+
+If we wanted to be more precise, a hypothesis test where the null assumes there is no linear trend between precipitation and `Longitude` would support the decision to add it to the regression.
+
+```{r trend_check_3, echo = FALSE}
+
+ghcnd %>%
+  filter(Element %in% c("PRCP")) %>%
+  group_by(ID, Name, Month, Latitude, Longitude, Elevation, .add= TRUE) %>%
+  summarise(Value = mean(Value), .groups = "drop")%>%
+  ggplot(aes(Latitude, Value, col=factor(Month) ))+
+  geom_point()+
+  labs(title= "Latitude vs. Elevation", y="Mean Precipitation (in mm)")
+
+```
+
+
+In this case, there is no clear increase or decrease in mean precipitation values as the values for `Latitude` increase. While there does seem to be a sinusoidal variation of period, the graph above is not very clear on that or what the period of such a trend would be. Thus, to prevent over-fitting, we do not include `Latitude` in the model. 
+
+As before, the only evidence of a sinusoidal trend in `Latitude` is the graph above. On its own, it is not enough to provide sufficient evidence for the existence of such a trend. On trial and error, including it does not make much of a difference once we score the model, but it would be better practice to examine the trend more thoroughly and perform hypothesis testing on it before deciding to not include the variable.
+
+Finally, for the `PRCP_Trend` variable, we include it (with a lag of one year) due to the intuition that a long term climate trend would help support the model. This partially accounts for the effects of factors such as global warming on precipitation levels. To create this long term climate trend, we find the average precipitation for every month across all years. 
+
+
+We theorize that the model is as follows:
+\[
+PRCP = \beta_0+ \beta_1 Month+\beta_2\sin(2\pi/12*Month) + \beta_3\cos(2\pi/12*Month)  +\beta_4Longitude +\beta_5Elevation +\beta_6PRCP\_Trend
+\]
+
+Now that we have our model, we create the desired variables as necessary and then run our regression model.
+```{r model, echo = TRUE}
+
+monthly_data <- monthly_data %>%
+                mutate(cosMonth = I(cos(2*pi/12*Month)),
+                       sinMonth = I(sin(2*pi/12*Month)) )%>%
+                group_by(Year)%>%
+                mutate(PRCP_Trend = mean(PRCP))%>%
+                ungroup()%>%
+                mutate(PRCP_Trend_lag = sapply(1:nrow(monthly_data), function(x) 
+                PRCP_Trend[x-1]))%>%
+                drop_na()
+PRCP_Trend_Lag <-as.vector(unlist(monthly_data$PRCP_Trend_lag, use.names = FALSE))
+PRCP_Trend_Lag<- append(PRCP_Trend_Lag,values =0, after = 0)
+
+monthly_data <- monthly_data %>%
+  mutate(PRCP_Trend_lagged = as.vector(PRCP_Trend_Lag))
+                
+
+mod1 <- lm(PRCP ~ Month+ cosMonth + sinMonth+Longitude 
+           +Elevation +PRCP_Trend_lagged, data = monthly_data)
+
+coefs <- model.matrix(mod1)
+beta.hat <- solve(t(coefs) %*% coefs, t(coefs) %*% monthly_data$PRCP)
+
+```
+
+
+The results are as follows:
+
+```{r betas, echo = FALSE}
+
+
+
+knitr::kable(data.frame(Coefficient = c("beta_0","beta_1","beta_2","beta_3","beta_4","beta_5","beta_6"), Estimate = beta.hat[,1] )) %>%
+  kable_styling()
+                     
+```
+
+Now, we can use our model to predict estimates of precipitation values using different inputs: 
+
+```{r predictions, echo=TRUE}
+values_2022 <- data.frame("Year" = 2022)
+predicted <- predict(mod1, newdata = monthly_data, se.fit = TRUE)
+monthly_data <- monthly_data %>%
+  mutate(model_pred = predicted$fit,
+         se.fit = predicted$se.fit,
+         model_sd = sqrt(predicted$se.fit^2 + predicted$residual.scale^2)) 
+
+```
+
+For example, we can look at the Year 2016 discussed at the start of the report:
+
+
+```{r prediction_plotting, echo=FALSE}
+monthly_data%>%
+  filter(Year %in% 2016)%>%
+ggplot(aes(x=Month,y=model_pred,col= "Predicted"))+
+  geom_line()+
+  facet_wrap(~ Name)+
+  geom_line(aes(x=Month,y=PRCP, col="Observed")) +
+  labs(title="2016 Predictions", y= "Precipitation (in mm)")
+
+```
+
+
+As can be seen from the graph above, while the model fails to capture some outlier values, it correctly predicts the general trend observed that year. 
+
+Now that we have our model and the values of its coefficients, we can input new covariates to try and predict the temperature at different locations and times. The only limit with the using different times is that, while we can predict up to 12 months in the future, the model does require knowing the average precipitation in the previous year.
+
+## Assessment
+
+With our model complete, we can turn our attention to the scoring of the model. We use two different scoring methods: Squared Error (SE) and Dawid Sebastiani (DS) Scores. 
+
+We conduct the scoring using the "Leave-One-Station-Out" method. The way this works is that we routinely leave one station out of the data. Then, we use that filtered data to train/construct our model. Next, we use the trained model to predict the data for the previously filtered station. We do this for each of the eight stations.
+
+```{r cross_validation, echo =TRUE}
+
+ #empty vectors to store data in 
+pred_fit <- c()
+standard_errors <- c()
+for (i in seq_along(Names)) { #loop through stations
+  
+  data <- monthly_data 
+  
+  #training the model leaving one station out
+  fit <- lm(formula = PRCP ~ Month+ sinMonth+ cosMonth + PRCP_Trend_lagged 
+             +Longitude +Elevation,   
+            data = data %>% filter(Name != c(Names[i])))
+  
+  #predicting estimates for that station
+  pred_cv <- predict(fit, newdata = data%>%
+  filter(Name == c(Names[i])), se.fit = TRUE)
+  pred_fit <- append(pred_fit, pred_cv$fit)
+  
+  stand_err_i <- sqrt((pred_cv$se.fit)^2 + (pred_cv$residual.scale)^2)
+  standard_errors <- append(standard_errors, stand_err_i)
+  }
+
+  #adding the predicted estimates and standard error to the data frame
+  data <- data %>%  mutate(predicted_vals = pred_fit, standard_errors = standard_errors ) 
+```
+
+Thus, we have two models to estimate Scottish weather: they use the same covariates, but one uses cross-validation and the other doesn't. We can do a quick evaluation of them by comparing their estimates for 2016:
+
+```{r compare_2016, echo=FALSE}
+data %>%
+filter(Year %in% 2016)%>%
+ggplot(aes(x=Month,y=model_pred,col= "Predicted (without CV)"))+
+  geom_line()+
+  facet_wrap(~ Name)+
+  geom_line(aes(x=Month,y=PRCP, col="Observed")) +
+  geom_line(aes(x=Month,y= predicted_vals, col = "Predicted (with CV)" ))+
+  labs(title="2016 Predictions", y= "Precipitation (in mm)")
+
+```
+
+
+From above, we can see that both versions of the model produce similar results in most stations. The only significant difference being in perhaps the `BENMORE` station.
+
+For a more formal comparison of the models, we compute the SE and DS scores for each:
+```{r score_calculation, echo =TRUE}
+  #calculating the scores
+  data <- data %>% mutate(se_scores_cv = proper_score("se", PRCP, mean = predicted_vals),
+                          ds_scores_cv = proper_score("ds", PRCP, mean = predicted_vals, sd =   standard_errors),
+                          se_scores_model =proper_score("se", PRCP, mean = model_pred),
+                          ds_scores_model = proper_score("ds", PRCP, mean = model_pred, sd =   model_sd) )
+
+```
+
+We can now compare the scores of each. We begin by looking at the SE scores aggregated over each month across all the years:
+
+```{r se_comparison, echo=FALSE}
+data %>% 
+  group_by(Name, Month) %>%
+  summarise(se_scores_cv = mean(se_scores_cv), se_scores_model = mean(se_scores_model), .groups = "drop") %>%
+  ggplot(aes(x=Month, y=se_scores_cv, col = "CV SE"))+
+  geom_point(size = 0.3)+
+  geom_point(aes(x=Month, y = se_scores_model, col = "Model SE"), size= 0.3)+
+  labs(y="Score", title = "Cross Validation Mean SE Scores per Month per Station")+
+  facet_wrap(~ Name)
+
+```
+
+
+As can be expected after looking at the 2016 scores, the scores of both models are similar, with CV scores perhaps performing slightly better, at all but one station: `BENMORE`. There, the non cross validated (CV) model visibly provides better estimates (evidenced by the lower scores) than the cross validated model. However, while the non CV model does better, they both get higher scores at the `BENMORE` station than they do at other stations. Since scores are negatively oriented, this means that both models perform worse when trying to predict estimates for the `BENMORE` station. One explanation for this could be that `BENMORE` recorded higher average precipitation levels than the other stations did:
+
+```{r precipitation levels, echo = FALSE}
+
+data %>% group_by(Month,Name)%>%
+  summarise(PRCP = mean(PRCP), .groups = "drop")%>%
+  pivot_wider(names_from = Name, values_from = PRCP)%>%
+  knitr::kable()%>%
+  kable_styling()%>%
+  column_spec(4, color="red")
+
+
+```
+
+As for the DS scores:
+
+```{r ds_comparison, echo=FALSE}
+data %>% 
+  group_by(Name, Month) %>%
+  summarise(ds_scores_cv = mean(ds_scores_cv), ds_scores_model = mean(ds_scores_model), .groups = "drop") %>%
+  ggplot(aes(x=Month, y=ds_scores_cv, col = "Model DS"))+
+  geom_point(size = 0.3)+
+  geom_point(aes(x=Month, y = ds_scores_model, col = "CV DS"), size= 0.3)+
+  labs(y="Score", title = "Cross Validation Mean DS Scores per Month per Station")+
+  facet_wrap(~ Name)
+
+```
+
+
+We end up observing the same relative pattern as with the SE scores. The scores are mostly the same, but both models perform worse when trying to predict the results of the `BENMORE` station. In addition, while they both do a poorer job, the CV model performs better than the non cross validated model at `BENMORE`. The explanation for the difficulty the models have in predicted values for that station is likely the same as the one above that cites the higher recorded precipitation levels.
+
+Also of interest is how the difference between the values of the two scores. Since they both exhibited similar patterns, this will only be analyzed for the CV Model:
+
+
+```{r plotting_scores_a, echo=FALSE}
+data %>% 
+  group_by(Name, Month) %>%
+  summarise(se_scores_cv = mean(se_scores_cv), ds_scores_cv = mean(ds_scores_cv), .groups = "drop") %>%
+  ggplot(aes(x=Month, y=se_scores_cv, col = "SE scores"))+
+  geom_point(size = 0.3)+
+  geom_point(aes(x=Month, y = ds_scores_cv, col = "DS scores"), size= 0.3)+
+  labs(y="Score", title = "Cross Validation Mean Scores per Month per Station")+
+  facet_wrap(~ Name)
+
+```
+
+
+As can be seen, the SE scores calculate higher values than DS scores for all but one stations, again the `BENMORE` station. The difference between SE and DS scores is that SE scoring does not take the variance of the model into account. Thus, the lower DS scores probably indicate the accuracy of the model despite small variance. However, this small variance is penalized when it comes to `BENMORE`, the station the model struggled most with estimating, as it comes at the expense of understanding the true uncertainty of the model. 
+
+
+In conclusion, both models were able to perform well on predicting estimates for inputs that were closer to the average input values of the given data. However, they began to struggle when faced with outliers in the data. That said, the cross validated model was able to deal with this better. This indicates that, for better estimates, we can input a wider variety of data to train the cross validated model before forming prediction estimates. 
+
+
+## References
+
+1- Phipson B, Smyth GK. Permutation P-values should never be zero: calculating exact P-values when permutations are randomly drawn. Stat Appl Genet Mol Biol. 2010;9:Article39. doi: 10.2202/1544-6115.1585. Epub 2010 Oct 31. PMID: 21044043.
+
+# Code appendix
+
+## Function definitions
+
+```{r code=readLines("functions.R"), eval=FALSE, echo=TRUE}
+# Do not change this code chunk
+```
+
+## Analysis code
+
+```{r code=readLines("analysis.R"), eval=FALSE, echo=TRUE}
+# Do not change this code chunk
+```
